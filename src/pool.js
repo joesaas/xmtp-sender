@@ -19,6 +19,8 @@ export class ClientPool {
       (entry, i) => new ManagedClient(i, entry, config, log, metrics),
     );
     this.rotationTimer = null;
+    this.rotationCursor = 0;
+    this.rotating = false;
   }
 
   async start() {
@@ -42,13 +44,29 @@ export class ClientPool {
     return this.clients.filter((c) => c.healthy).length;
   }
 
-  /** Rotate a single client (round-robin): zero-downtime rolling rebuild. */
+  /**
+   * Rotate a single client, round-robin: every client gets its turn, so each
+   * client's in-memory DB (and DM cache) is periodically dropped and rebuilt.
+   * This is what bounds memory growth — without it, group_messages /
+   * group_intents would accumulate forever.
+   */
   async rotateOne() {
-    const candidate = this.clients.find((c) => c.healthy) ?? this.clients[0];
-    if (!candidate) return;
-    this.metrics.rotations++;
-    this.log.info({ client: candidate.index }, "scheduled rotation");
-    await candidate.rebuild("scheduled-rotation");
+    if (this.rotating) return;
+    this.rotating = true;
+    try {
+      for (let i = 0; i < this.clients.length; i++) {
+        const idx = (this.rotationCursor + i) % this.clients.length;
+        const candidate = this.clients[idx];
+        if (candidate.state === "closed") continue;
+        this.rotationCursor = (idx + 1) % this.clients.length;
+        this.metrics.rotations++;
+        this.log.info({ client: candidate.index }, "scheduled rotation");
+        await candidate.rebuild("scheduled-rotation");
+        return;
+      }
+    } finally {
+      this.rotating = false;
+    }
   }
 
   async warmup(addresses) {

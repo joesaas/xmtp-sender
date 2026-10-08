@@ -38,6 +38,7 @@ export function loadConfig() {
     sendMaxRetries: num("SEND_MAX_RETRIES", 2),
     apiRateLimitQps: num("API_RATE_LIMIT_QPS", 20),
     maxTextLen: num("MAX_TEXT_LEN", 4096),
+    maxDmCacheSize: num("MAX_DM_CACHE_SIZE", 10000),
     disappearInHours: num("DISAPPEAR_IN_HOURS", 0),
     circuitBreakerThreshold: num("CIRCUIT_BREAKER_THRESHOLD", 5),
     rebuildBaseDelayMs: num("REBUILD_BASE_DELAY_MS", 2000),

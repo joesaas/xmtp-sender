@@ -24,7 +24,8 @@ export class ManagedClient {
     this.state = "init"; // init | healthy | unhealthy | rebuilding | closed
     this.consecutiveFailures = 0;
     this.inflight = 0;
-    this.dmCache = new Map(); // addressLower -> Dm
+    this.dmCache = new Map(); // addressLower -> Dm (LRU, capped)
+    this.maxDmCacheSize = config.maxDmCacheSize ?? 10000;
     this.rebuildTimer = null;
     this.lastRebuildAt = 0;
   }
@@ -163,6 +164,16 @@ export class ManagedClient {
     };
   }
 
+  /** Insert into the DM cache with LRU eviction (Map preserves insertion order). */
+  cacheDm(key, dm) {
+    if (this.dmCache.has(key)) this.dmCache.delete(key); // refresh recency
+    this.dmCache.set(key, dm);
+    while (this.dmCache.size > this.maxDmCacheSize) {
+      const oldest = this.dmCache.keys().next().value;
+      this.dmCache.delete(oldest);
+    }
+  }
+
   /**
    * Get (cached) or create the DM with `address`.
    * 6.1.0 has no findOrCreateDm: cache -> create -> on conflict re-fetch.
@@ -189,7 +200,7 @@ export class ManagedClient {
       dm = await this.client.conversations.fetchDmByIdentifier(identifier);
       if (!dm) throw e;
     }
-    this.dmCache.set(key, dm);
+    this.cacheDm(key, dm);
     return dm;
   }
 
