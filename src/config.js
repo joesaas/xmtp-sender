@@ -19,12 +19,18 @@ export function loadConfig() {
     throw new Error("DB_ENCRYPTION_KEY must be 64 hex chars (32 bytes)");
   }
 
+  const disappearInHours = num("DISAPPEAR_IN_HOURS", 0);
+  if (!(disappearInHours >= 0)) {
+    throw new Error("DISAPPEAR_IN_HOURS must be a non-negative number");
+  }
+
   return {
     env: process.env.XMTP_ENV ?? "dev",
     port: num("PORT", 3000),
     signers, // [{ signer, address }]
     apiToken: req("API_TOKEN"),
     dbEncryptionKey: Uint8Array.from(Buffer.from(dbKeyHex, "hex")),
+    disappearInHours,
     storageMode: (process.env.STORAGE_MODE ?? "memory").toLowerCase(),
     dataDir: process.env.DATA_DIR ?? "./data",
     clientConcurrency: num("CLIENT_CONCURRENCY", 8),
@@ -32,6 +38,7 @@ export function loadConfig() {
     sendMaxRetries: num("SEND_MAX_RETRIES", 2),
     apiRateLimitQps: num("API_RATE_LIMIT_QPS", 20),
     maxTextLen: num("MAX_TEXT_LEN", 4096),
+    disappearInHours: num("DISAPPEAR_IN_HOURS", 0),
     circuitBreakerThreshold: num("CIRCUIT_BREAKER_THRESHOLD", 5),
     rebuildBaseDelayMs: num("REBUILD_BASE_DELAY_MS", 2000),
     rotationIntervalMs: num("ROTATION_INTERVAL_MS", 21600000),

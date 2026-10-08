@@ -149,6 +149,21 @@ export class ManagedClient {
   }
 
   /**
+   * Disappearing-message settings for newly created DMs.
+   * fromNs = now: every message this service sends is sent after DM creation,
+   * so all of them get expire_at_ns = sent_at + inNs.
+   * Returns undefined when disabled (DISAPPEAR_IN_HOURS=0).
+   */
+  disappearingSettings() {
+    const h = this.config.disappearInHours;
+    if (!h || h <= 0) return undefined;
+    return {
+      fromNs: BigInt(Date.now()) * 1_000_000n,
+      inNs: BigInt(Math.round(h * 3600 * 1e9)),
+    };
+  }
+
+  /**
    * Get (cached) or create the DM with `address`.
    * 6.1.0 has no findOrCreateDm: cache -> create -> on conflict re-fetch.
    */
@@ -157,9 +172,17 @@ export class ManagedClient {
     const hit = this.dmCache.get(key);
     if (hit) return hit;
     const identifier = { identifier: address, identifierKind: ETHEREUM };
+    const messageDisappearingSettings = this.disappearingSettings();
+    const options = messageDisappearingSettings ? { messageDisappearingSettings } : undefined;
+    if (messageDisappearingSettings) {
+      this.log.info(
+        { client: this.index, hours: this.config.disappearInHours },
+        "creating DM with disappearing messages enabled",
+      );
+    }
     let dm;
     try {
-      dm = await this.client.conversations.createDmWithIdentifier(identifier);
+      dm = await this.client.conversations.createDmWithIdentifier(identifier, options);
     } catch (e) {
       // Possible race: DM already exists (e.g. created by another path).
       this.log.warn({ client: this.index, err: String(e?.message ?? e) }, "createDm failed, refetching");

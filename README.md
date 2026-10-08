@@ -67,6 +67,18 @@ See `.env.example`. Key knobs:
 | `API_RATE_LIMIT_QPS` | `20` | token bucket on `/send-dm` |
 | `ROTATION_INTERVAL_MS` | `21600000` | rolling client rebuild every 6h (`0` = off) |
 | `CIRCUIT_BREAKER_THRESHOLD` | `5` | consecutive failures before fencing a client |
+| `DISAPPEAR_IN_HOURS` | `0` | disappearing messages: `0` = off; e.g. `24` = sent messages expire 24h after sending |
+
+### Disappearing messages (阅后即焚)
+
+Set `DISAPPEAR_IN_HOURS` (e.g. `24`) and every newly created DM gets
+`messageDisappearingSettings: { fromNs: <now>, inNs: <hours> }`, so each message
+expires `inNs` after it is sent and compliant apps delete it from local storage.
+
+Heads-up from the [official docs](https://docs.xmtp.org/chat-apps/core-messaging/disappearing-messages):
+this is **app-level enforcement** — it removes messages from participants' UIs and
+local storage, but does **not** delete them from the XMTP network. A recipient
+using an app without disappearing-message support will still see everything.
 
 gRPC keepalive can be tuned without code changes via
 `XMTP_GRPC_KEEPALIVE_INTERVAL_SECS` / `XMTP_GRPC_KEEPALIVE_TIMEOUT_SECS` /
