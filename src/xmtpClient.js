@@ -67,6 +67,29 @@ export class ManagedClient {
       { client: this.index, inboxId: this.inboxId, registered: client.isRegistered },
       "client ready",
     );
+    // Self-heal the installation count: every fresh build (boot, rebuild,
+    // rotation) leaves at most 1 active installation for the inbox, so the
+    // MAX_INSTALLATIONS_PER_INBOX (10) limit is never approached.
+    // No-op when there is nothing else to revoke.
+    await this.revokeOthers("build");
+  }
+
+  /**
+   * Revoke all other installations of this inbox. Best-effort: a failure is
+   * logged and counted; the next successful build/rebuild retries, and a
+   * single success clears the whole backlog.
+   */
+  async revokeOthers(context) {
+    try {
+      await this.client.revokeAllOtherInstallations();
+      this.log.info({ client: this.index, context }, "revoked older installations");
+    } catch (e) {
+      this.metrics.revokeFailures++;
+      this.log.warn(
+        { client: this.index, context, err: String(e?.message ?? e) },
+        "revokeAllOtherInstallations failed (will retry on next build)",
+      );
+    }
   }
 
   async close() {
@@ -88,7 +111,6 @@ export class ManagedClient {
     if (this.state === "rebuilding" || this.state === "closed") return;
     this.state = "rebuilding";
     this.metrics.rebuilds++;
-    const oldInstallationId = this.client?.installationIdBytes ?? null;
     this.log.warn({ client: this.index, reason }, "rebuilding client");
     try {
       await this.close();
@@ -97,16 +119,8 @@ export class ManagedClient {
     const delay = this.backoffDelay();
     await new Promise((r) => setTimeout(r, delay));
     try {
-      await this.build();
-      // Revoke the previous installation so we never approach
-      // MAX_INSTALLATIONS_PER_INBOX (10). Best effort: failure is non-fatal.
-      try {
-        await this.client.revokeAllOtherInstallations();
-        this.log.info({ client: this.index }, "revoked older installations");
-      } catch (e) {
-        this.log.warn({ client: this.index, err: String(e) }, "revokeAllOtherInstallations failed");
-      }
-      if (oldInstallationId && this.config.storageMode === "file") {
+      await this.build(); // build() ends with revokeOthers()
+      if (this.config.storageMode === "file") {
         this.pruneOldDbFiles();
       }
     } catch (e) {

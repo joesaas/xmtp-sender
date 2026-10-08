@@ -7,6 +7,7 @@ export class Metrics {
     this.retries = 0;
     this.rebuilds = 0;
     this.rotations = 0;
+    this.revokeFailures = 0;
     this.latencyMs = []; // ring buffer of recent send latencies
     this.startedAt = Date.now();
     this.perClient = new Map(); // index -> { ok, failed }
@@ -41,6 +42,7 @@ export class Metrics {
       retries: this.retries,
       rebuilds: this.rebuilds,
       rotations: this.rotations,
+      revokeFailures: this.revokeFailures,
       latencyMs: { p50: this.percentile(50), p95: this.percentile(95), p99: this.percentile(99) },
       perClient,
     };
