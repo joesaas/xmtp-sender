@@ -4,13 +4,45 @@
  * Design notes from libxmtp source:
  * - `Client.create` registers the installation (wallet signature, one-time per boot).
  * - `close()` is idempotent; call it before dropping the reference.
+ * - `close()` does NOT release the network connection: it cancels workers and
+ *   disconnects the DB; the gRPC channel dies only when the last Rust-side
+ *   reference drops (GC of the JS wrapper). So refresh = drain in-flight work,
+ *   retire, close, null every reference, and let refcounting reclaim the
+ *   connection. Watch `openFds` in /metrics: it must return to baseline after
+ *   each rebuild; a monotonic climb means a stale reference somewhere.
+ * - Installation hygiene is precise, never wholesale: a retiring client revokes
+ *   ONLY its own installation id (`revokeInstallations([ownId])`), never
+ *   `revokeAllOtherInstallations()` — the latter would kick unrelated
+ *   installations of the same wallet (e.g. a second instance mid-deploy).
+ *   If the self-revoke fails (usually the network fault that triggered the
+ *   rebuild), the id is queued in a persisted pending list and the next
+ *   generation revokes exactly that id after it builds.
  * - `dbPath: null` => pure in-memory DB: no disk growth, nothing to clean up.
  * - `useSingleConnection: true` is the SDK's recommended mode for many clients
  *   in one process.
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Client } from "@xmtp/node-sdk";
 
 const ETHEREUM = 0;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Race a promise against a timeout; the loser keeps running in background. */
+async function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const toHex = (bytes) => Buffer.from(bytes).toString("hex");
+const fromHex = (hex) => Uint8Array.from(Buffer.from(hex, "hex"));
 
 export class ManagedClient {
   constructor(index, entry, config, log, metrics) {
@@ -28,6 +60,31 @@ export class ManagedClient {
     this.maxDmCacheSize = config.maxDmCacheSize ?? 10000;
     this.rebuildTimer = null;
     this.lastRebuildAt = 0;
+    // Installation ids (hex) this lineage retired but could not revoke yet.
+    // Persisted so a process restart can still clean up exactly its own
+    // previous installation — and nothing else.
+    this.pendingRevokes = new Set();
+    this.loadPendingRevokes();
+  }
+
+  pendingRevokesPath() {
+    return `${this.config.dataDir}/pending-revokes-${this.index}.json`;
+  }
+
+  loadPendingRevokes() {
+    try {
+      const arr = JSON.parse(readFileSync(this.pendingRevokesPath(), "utf8"));
+      if (Array.isArray(arr)) {
+        for (const h of arr) if (typeof h === "string") this.pendingRevokes.add(h);
+      }
+    } catch { /* no file yet: fine */ }
+  }
+
+  persistPendingRevokes() {
+    try {
+      mkdirSync(this.config.dataDir, { recursive: true });
+      writeFileSync(this.pendingRevokesPath(), JSON.stringify([...this.pendingRevokes]));
+    } catch { /* best effort: in-memory set still applies for this process */ }
   }
 
   get healthy() {
@@ -67,36 +124,99 @@ export class ManagedClient {
       { client: this.index, inboxId: this.inboxId, registered: client.isRegistered },
       "client ready",
     );
-    // Self-heal the installation count: every fresh build (boot, rebuild,
-    // rotation) leaves at most 1 active installation for the inbox, so the
-    // MAX_INSTALLATIONS_PER_INBOX (10) limit is never approached.
-    // No-op when there is nothing else to revoke.
-    await this.revokeOthers("build");
+    // Precise installation hygiene: revoke exactly the ids this lineage
+    // retired earlier but could not revoke at retire time (persisted queue).
+    // Normally empty — retire-time self-revoke handles the common path.
+    await this.flushPendingRevokes();
   }
 
   /**
-   * Revoke all other installations of this inbox. Best-effort: a failure is
-   * logged and counted; the next successful build/rebuild retries, and a
-   * single success clears the whole backlog.
+   * Revoke ONLY this client's own installation, while it is still alive to
+   * sign/publish the identity update. Best-effort with a hard timeout: on
+   * failure the id joins the persisted pending queue and the next generation
+   * revokes exactly that id (see flushPendingRevokes). Never touches any
+   * other installation of this wallet.
    */
-  async revokeOthers(context) {
+  async retireSelf() {
+    const client = this.client;
+    if (!client) return;
+    let idHex;
     try {
-      await this.client.revokeAllOtherInstallations();
-      this.log.info({ client: this.index, context }, "revoked older installations");
+      const idBytes = client.installationIdBytes;
+      idHex = toHex(idBytes);
+      await withTimeout(
+        client.revokeInstallations([idBytes]),
+        this.config.revokeTimeoutMs,
+        "revokeInstallations",
+      );
+      this.metrics.revokesOk++;
+      this.log.info({ client: this.index, installation: idHex }, "revoked own installation");
     } catch (e) {
       this.metrics.revokeFailures++;
+      if (idHex) {
+        this.pendingRevokes.add(idHex);
+        this.persistPendingRevokes();
+      }
       this.log.warn(
-        { client: this.index, context, err: String(e?.message ?? e) },
-        "revokeAllOtherInstallations failed (will retry on next build)",
+        { client: this.index, err: String(e?.message ?? e) },
+        "self-revoke failed; queued for next generation",
       );
     }
   }
 
+  /**
+   * After a fresh build: revoke exactly the queued ids from earlier
+   * generations of THIS client slot. One batched call, ids only ever come
+   * from our own lineage — unrelated installations are never touched.
+   */
+  async flushPendingRevokes() {
+    if (!this.client || this.pendingRevokes.size === 0) return;
+    const currentHex = toHex(this.client.installationIdBytes);
+    const ids = [...this.pendingRevokes].filter((h) => h !== currentHex);
+    if (ids.length === 0) return;
+    try {
+      await withTimeout(
+        this.client.revokeInstallations(ids.map(fromHex)),
+        this.config.revokeTimeoutMs,
+        "revokeInstallations",
+      );
+      for (const h of ids) this.pendingRevokes.delete(h);
+      this.persistPendingRevokes();
+      this.metrics.revokesOk += ids.length;
+      this.log.info({ client: this.index, count: ids.length }, "revoked queued retired installations");
+    } catch (e) {
+      this.metrics.revokeFailures++;
+      this.log.warn(
+        { client: this.index, err: String(e?.message ?? e) },
+        "flushing pending revokes failed (will retry on next build)",
+      );
+    }
+  }
+
+  /**
+   * Graceful close, ordered for connection hygiene:
+   * 1. drain: state != healthy stops new picks; wait for in-flight sends to
+   *    settle (bounded by drainTimeoutMs) instead of cancelling them.
+   * 2. retire: revoke our own installation while the client can still sign.
+   * 3. close + null the reference so GC can drop the Rust client and its
+   *    gRPC channel (close() alone does not release the connection).
+   */
   async close() {
-    this.state = "closed";
     if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
     this.dmCache.clear();
     if (this.client) {
+      this.state = "draining";
+      const deadline = Date.now() + this.config.drainTimeoutMs;
+      while (this.inflight > 0 && Date.now() < deadline) {
+        await sleep(25);
+      }
+      if (this.inflight > 0) {
+        this.log.warn(
+          { client: this.index, inflight: this.inflight },
+          "drain timed out; closing with sends still in flight",
+        );
+      }
+      await this.retireSelf();
       try {
         await this.client.close();
       } catch (e) {
@@ -104,11 +224,12 @@ export class ManagedClient {
       }
       this.client = null;
     }
+    this.state = "closed";
   }
 
   /** Rolling rebuild: used by circuit breaker and by generational rotation. */
   async rebuild(reason) {
-    if (this.state === "rebuilding" || this.state === "closed") return;
+    if (this.state === "rebuilding" || this.state === "closed" || this.state === "draining") return;
     this.state = "rebuilding";
     this.metrics.rebuilds++;
     this.log.warn({ client: this.index, reason }, "rebuilding client");
@@ -119,7 +240,7 @@ export class ManagedClient {
     const delay = this.backoffDelay();
     await new Promise((r) => setTimeout(r, delay));
     try {
-      await this.build(); // build() ends with revokeOthers()
+      await this.build(); // build() ends with flushPendingRevokes()
       if (this.config.storageMode === "file") {
         this.pruneOldDbFiles();
       }
@@ -137,7 +258,7 @@ export class ManagedClient {
   }
 
   scheduleRebuild(reason) {
-    if (this.rebuildTimer || this.state === "closed") return;
+    if (this.rebuildTimer || this.state === "closed" || this.state === "draining" || this.state === "rebuilding") return;
     const delay = this.backoffDelay();
     this.rebuildTimer = setTimeout(() => {
       this.rebuildTimer = null;
@@ -242,6 +363,7 @@ export class ManagedClient {
       consecutiveFailures: this.consecutiveFailures,
       inflight: this.inflight,
       dmCacheSize: this.dmCache.size,
+      pendingRevokes: this.pendingRevokes.size,
     };
   }
 }

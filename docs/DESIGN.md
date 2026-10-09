@@ -91,7 +91,10 @@ DM 首次发送重走 3–4 次往返（用 DM 缓存 + 预热摊薄）。
 ### 1.5 身份与密钥
 
 - 单 inbox 安装数上限 `MAX_INSTALLATIONS_PER_INBOX = 10`（`xmtp_configuration/.../mls.rs:31`）。
-  本项目 4 inbox × 1 installation，远离上限；轮转时 revoke 旧 installation 防止堆积。
+  本项目 4 inbox × 1 installation，远离上限；轮转时精确 revoke 自己退役的那个
+  installation 防止堆积——用 `revokeInstallations([ownId])`，**绝不用**
+  `revokeAllOtherInstallations()`：后者无差别踢掉同钱包全部其他 installation，
+  会误伤部署重叠期的另一实例（或同钱包的任何其他接入）。
 - 钱包签名**只在身份注册时需要**（建 inbox / 加 installation，`identity.rs:490` 起的
   `SignatureRequestBuilder`）；日常 send 和 key package 轮换只用 installation key。
   → 私钥只需在进程启动/重建时参与签名，平时不触碰。
@@ -137,8 +140,17 @@ DM 首次发送重走 3–4 次往返（用 DM 缓存 + 预热摊薄）。
 - **熔断器**：连续失败 ≥ N 次（默认 5）→ 标记 `unhealthy`，停止路由，指数退避重建
  （`close()` 是幂等的 → `Client.create` 同一 signer；inbox_id 是钱包派生的， deterministic，
   重建后 inbox 不变）。
-- **定时轮转**（默认每 6 小时，逐个滚动）：`close()` → 新 DB（内存即新）→ 重建 →
-  revoke 旧 installation。既是 file 模式的 janitor，也是无状态自愈。
+- **优雅刷新**（重建与定时轮转共用）：`close()` 本身不释放网络连接（源码核实：只
+  cancel worker、断 DB，gRPC channel 靠引用计数归零后随 GC 回收）。因此刷新顺序是：
+  摘流（state=draining，在途请求不再新增）→ 等 inflight 排空（上限
+  `DRAIN_TIMEOUT_MS`，不硬砍在途 send）→ 旧 client 趁还活着精确 revoke 自己这一个
+  installation → `close()` + 引用置空 → 建新 client。self-revoke 若失败（多半正是
+  触发重建的网络故障），该 id 进持久化 pending 队列（`DATA_DIR/pending-revokes-*.json`），
+  下一代 client 建成后精确补吊销——crash-loop 重启也不会泄漏，且永不误伤他人。
+  连接是否真回收看 `/metrics` 的 `openFds`：每次重建后应回到稳态基线，只涨不落
+  即存在残留引用。
+- **定时轮转**（默认每 6 小时，逐个滚动）：走上面的优雅刷新，既是 file 模式的
+  janitor，也是无状态自愈。
 
 ### 2.2 DM 会话缓存（`src/dmCache.js`）
 

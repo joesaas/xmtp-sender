@@ -1,4 +1,20 @@
 /** Minimal in-memory metrics: counters + latency samples. No message content. */
+import { readdirSync } from "node:fs";
+
+/**
+ * Open file descriptors of this process (Linux /proc). The leak check for
+ * client refreshes: after each rebuild, openFds should settle back to its
+ * baseline — a monotonic climb means a stale reference is keeping a dead
+ * client's gRPC channel (and its socket) alive.
+ */
+function openFdCount() {
+  try {
+    return readdirSync("/proc/self/fd").length;
+  } catch {
+    return null; // non-Linux
+  }
+}
+
 export class Metrics {
   constructor() {
     this.sendsTotal = 0;
@@ -7,6 +23,7 @@ export class Metrics {
     this.retries = 0;
     this.rebuilds = 0;
     this.rotations = 0;
+    this.revokesOk = 0;
     this.revokeFailures = 0;
     this.latencyMs = []; // ring buffer of recent send latencies
     this.startedAt = Date.now();
@@ -42,7 +59,9 @@ export class Metrics {
       retries: this.retries,
       rebuilds: this.rebuilds,
       rotations: this.rotations,
+      revokesOk: this.revokesOk,
       revokeFailures: this.revokeFailures,
+      openFds: openFdCount(),
       latencyMs: { p50: this.percentile(50), p95: this.percentile(95), p99: this.percentile(99) },
       perClient,
     };

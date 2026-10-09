@@ -42,6 +42,8 @@ export function loadConfig() {
     disappearInHours: num("DISAPPEAR_IN_HOURS", 0),
     circuitBreakerThreshold: num("CIRCUIT_BREAKER_THRESHOLD", 5),
     rebuildBaseDelayMs: num("REBUILD_BASE_DELAY_MS", 2000),
+    drainTimeoutMs: num("DRAIN_TIMEOUT_MS", 5000),
+    revokeTimeoutMs: num("REVOKE_TIMEOUT_MS", 10000),
     rotationIntervalMs: num("ROTATION_INTERVAL_MS", 21600000),
     healthProbeIntervalMs: num("HEALTH_PROBE_INTERVAL_MS", 60000),
     warmupAddresses: (process.env.WARMUP_ADDRESSES ?? "")

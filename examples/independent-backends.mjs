@@ -49,9 +49,24 @@ export async function createIndependentClients(signers, options = {}) {
 /**
  * 独立重建其中一个 client：只影响它自己，
  * 其他 client 的连接不受影响（close 不碰 backend，backend 也是独立的）。
+ *
+ * 刷新顺序（连接卫生的关键）：
+ * 1. 旧 client 还活着时，只吊销它自己这一个 installation
+ *    （revokeInstallations([ownId])，不用 revokeAllOtherInstallations —
+ *    后者会误踢同钱包的其他 installation，如部署重叠期的另一实例）。
+ * 2. close + 丢弃引用，GC 才能回收 Rust client 及其 gRPC 通道
+ *    （close() 本身不释放连接，只停 worker/断 DB）。
+ * 3. 若第 1 步失败（多半正是触发重建的网络故障），新 client 建好后
+ *    用同一个 id 精确补吊销。
  */
 export async function rebuildOne(clients, index, signer) {
   const old = clients[index];
+  const oldIdBytes = old.installationIdBytes;
+  let selfRevoked = true;
+  await old.revokeInstallations([oldIdBytes]).catch((e) => {
+    selfRevoked = false;
+    console.warn("self-revoke failed (will retry precisely after rebuild):", e.message);
+  });
   await old.close(); // 幂等；只关自己的 worker/stream/DB
   const backend = await createBackend({ env: XMTP_ENV });
   const fresh = await Client.create(signer, {
@@ -61,10 +76,11 @@ export async function rebuildOne(clients, index, signer) {
     useSingleConnection: true,
     disableDeviceSync: true,
   });
-  // 保持活跃 installation数为 1（MAX_INSTALLATIONS_PER_INBOX=10 是同时在线上限）
-  await fresh.revokeAllOtherInstallations().catch((e) => {
-    console.warn("revoke failed (non-fatal):", e.message);
-  });
+  if (!selfRevoked) {
+    await fresh.revokeInstallations([oldIdBytes]).catch((e) => {
+      console.warn("precise revoke of retired installation failed:", e.message);
+    });
+  }
   clients[index] = fresh;
   return fresh;
 }
