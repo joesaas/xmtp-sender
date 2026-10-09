@@ -185,6 +185,7 @@ DM 首次发送重走 3–4 次往返（用 DM 缓存 + 预热摊薄）。
 | DB 膨胀（file 模式） | 轮转计时器 / 文件大小阈值 | rolling rebuild |
 | 进程崩溃 | — | 容器/Docker restart policy；启动即重建（无状态） |
 | 未捕获异常 | `unhandledRejection` handler | 只记日志不退出（发送错误不致命） |
+| 启动时单个 client 注册失败 | `start()` 捕获 | 服务降级启动（其余 client 先行服务），失败者标记 unhealthy 走退避重建自愈——启动不是全有或全无 |
 
 ### 2.6 性能：5 QPS 的容量核算
 

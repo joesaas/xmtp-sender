@@ -24,9 +24,15 @@ export class ClientPool {
   }
 
   async start() {
-    // Create clients in parallel; each registration is independent.
+    // Create clients in parallel; each registration is independent and
+    // fault-tolerant (a failed client heals in the background, see
+    // ManagedClient.start) — the service comes up even if some clients
+    // are still retrying.
     await Promise.all(this.clients.map((c) => c.start()));
-    this.log.info("all 4 clients ready");
+    this.log.info(
+      { healthy: this.healthyCount(), total: this.clients.length },
+      "client pool started",
+    );
     if (this.config.rotationIntervalMs > 0) {
       this.rotationTimer = setInterval(() => this.rotateOne().catch(() => {}), this.config.rotationIntervalMs);
       this.rotationTimer.unref?.();

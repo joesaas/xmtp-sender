@@ -99,8 +99,24 @@ export class ManagedClient {
     return null; // in-memory
   }
 
+  /**
+   * Boot is fault-tolerant per client: a failed initial registration (e.g.
+   * one transient network error) must not take down the whole service.
+   * The client starts `unhealthy` and heals via the normal backoff rebuild;
+   * the pool (and HTTP API) come up regardless.
+   */
   async start() {
-    await this.build();
+    try {
+      await this.build();
+    } catch (e) {
+      this.consecutiveFailures++;
+      this.state = "unhealthy";
+      this.log.error(
+        { client: this.index, err: String(e?.message ?? e) },
+        "initial client build failed; will retry in background",
+      );
+      this.scheduleRebuild("boot-failed");
+    }
   }
 
   async build() {

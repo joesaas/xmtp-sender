@@ -12,7 +12,8 @@
   "main": "src/index.js",
   "name": "xmtp-sender",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "sim": "node sim/smoke.mjs"
   },
   "type": "module",
   "version": "0.1.0"

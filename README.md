@@ -115,6 +115,21 @@ Pool status per client; counters + p50/p95/p99 send latency.
 - DM content is MLS end-to-end encrypted; the XMTP network only sees ciphertext
   envelopes plus metadata.
 
+## Offline smoke test (simulated network)
+
+No XMTP network reachable? Verify the full boot lifecycle against a stubbed
+SDK (real service code, fake network layer):
+
+```bash
+npm run sim
+```
+
+Scenario A: clean boot -> /health 4/4 -> /send-dm 200 -> graceful shutdown
+(each client revokes exactly its own installation). Scenario B: one client's
+registration is made to fail at boot — the service must still come up
+degraded (3/4) and heal to 4/4 in the background. Boot is fault-tolerant per
+client; a single failed registration never blocks startup.
+
 ## Limitations
 
 - The native gRPC client (tonic) does **not** support HTTP proxies — deploy where
