@@ -2,7 +2,11 @@ import { createEoaSigner } from "./signer.js";
 
 function req(name, def) {
   const v = process.env[name] ?? def;
-  if (v === undefined || v === "") throw new Error(`missing required env: ${name}`);
+  if (v === undefined || v === "") {
+    throw new Error(
+      `missing required env: ${name} (set it in ./.env — see .env.example — or export it in the environment)`,
+    );
+  }
   return v;
 }
 function num(name, def) {

@@ -25,6 +25,7 @@ and per-client circuit breakers + rolling rebuilds for self-healing.
 ```bash
 cp .env.example .env
 # fill in SENDER_KEY_1..4 (64 hex chars each), API_TOKEN, DB_ENCRYPTION_KEY (64 hex)
+# (.env in the working directory is auto-loaded at startup; requires Node >= 20.12)
 
 npm install
 npm start

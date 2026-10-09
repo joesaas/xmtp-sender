@@ -9,6 +9,13 @@
  */
 import { loadConfig } from "./config.js";
 import { Metrics } from "./metrics.js";
+
+// Load ./.env into process.env when the file exists (Node >= 20.12 built-in).
+// Silently skipped when there is no .env — container/systemd deployments
+// inject the variables directly (e.g. `docker run --env-file .env`).
+try {
+  process.loadEnvFile?.();
+} catch { /* no .env file: rely on the ambient environment */ }
 import { ClientPool } from "./pool.js";
 import { Sender } from "./sender.js";
 import { buildServer } from "./server.js";
