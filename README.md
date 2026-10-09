@@ -27,7 +27,8 @@ cp .env.example .env
 # fill in SENDER_KEY_1..4 (64 hex chars each), API_TOKEN, DB_ENCRYPTION_KEY (64 hex)
 # (.env in the working directory is auto-loaded at startup; requires Node >= 20.12)
 
-npm install
+npm install   # or: pnpm i — the committed .npmrc routes @xmtp/* to the
+              # official registry; some mirrors lag on @xmtp/node-bindings
 npm start
 ```
 
